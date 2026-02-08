@@ -1,0 +1,25 @@
+# Ignore dependencies (we install them inside the image)
+node_modules
+
+# Ignore build artifacts
+.next
+out
+build
+
+# Ignore git history
+.git
+
+# CRITICAL: Ignore the agents logs/data folder
+agents
+
+# Ignore docker config files
+docker-compose.yaml
+docker-compose.yml
+Dockerfile
+.dockerignore
+
+# Ignore logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*

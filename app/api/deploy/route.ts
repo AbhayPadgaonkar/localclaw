@@ -1,0 +1,221 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import { NextResponse } from "next/server";
+import Docker from "dockerode";
+import fs from "fs";
+import path from "path";
+
+// Connect to Docker
+const docker = new Docker({ socketPath: "/var/run/docker.sock" });
+
+// CRITICAL: Physical path on your Windows D: drive
+const HOST_AGENTS_PATH = "D:\\abhay_projects\\localclaw\\agents";
+
+// --- HELPER 1: The Auto-Downloader (Only for LocalClaw) ---
+// --- NEW HELPER: The "Janitor" (Cleanup Orphaned Agents) ---
+async function cleanupOrphanedAgents() {
+  console.log("🧹 Starting network cleanup...");
+  try {
+    // 1. List all containers (even stopped ones)
+    const containers = await docker.listContainers({ all: true });
+
+    // 2. Identify LocalClaw agents by their name prefix
+    const targets = containers.filter(c => 
+      c.Names.some(name => name.includes("agent-") || name.includes("telebot-"))
+    );
+
+    if (targets.length === 0) return;
+
+    console.log(`🗑️ Found ${targets.length} orphaned agents. Removing...`);
+
+    // 3. Force-remove them all in parallel
+    await Promise.all(targets.map(async (cInfo) => {
+      try {
+        const container = docker.getContainer(cInfo.Id);
+        await container.remove({ force: true }); //
+        console.log(`✅ Removed: ${cInfo.Names[0]}`);
+      } catch (e) {
+        // Ignore if already removed
+      }
+    }));
+  } catch (error: any) {
+    console.error("❌ Cleanup failed:", error.message);
+  }
+}
+
+async function ensureLocalModel(modelName: string) {
+  const OLLAMA_API = "http://localclaw-ollama-1:11434";
+  console.log(`🔍 Checking if ${modelName} exists in LocalClaw...`);
+
+  try {
+    const listReq = await fetch(`${OLLAMA_API}/api/tags`);
+    const listData = await listReq.json();
+    const exists = listData.models.some((m: any) => m.name.includes(modelName));
+
+    if (exists) {
+      console.log(`✅ ${modelName} is ready!`);
+      return;
+    }
+
+    console.log(`⬇️ Model missing. Pulling ${modelName}... (This may take time)`);
+    const pullReq = await fetch(`${OLLAMA_API}/api/pull`, {
+      method: "POST",
+      body: JSON.stringify({ name: modelName, stream: false }),
+    });
+
+    if (!pullReq.ok) throw new Error(`Ollama Pull Failed: ${pullReq.statusText}`);
+    console.log(`🎉 ${modelName} installed successfully!`);
+  } catch (error) {
+    console.error("❌ LocalClaw Error:", error);
+    console.warn("Proceeding with deployment despite Ollama check failure...");
+  }
+}
+
+// --- HELPER 2: The Config Generator (Fixed for 2026 Schema) ---
+function generateConfig(agentId: string, provider: string, apiKey: string, channels: any) {
+  const isLocal = provider === "localclaw" || provider === "local";
+  const modelId = isLocal ? "qwen2.5:7b" : (provider === "openai" ? "gpt-4o" : "gemini-1.5-flash");
+  const providerKey = isLocal ? "ollama" : (provider === "openai" ? "openai" : "google");
+
+  const config: any = {
+    tools: {
+    profile: "messaging"
+  },
+    agents: {
+      defaults: {
+        maxConcurrent: 4,
+        workspace: "/root/openclaw/workspace",
+        // FIX 1: 'primaryModel' moved to 'model.primary'
+        model: {
+          primary: isLocal ? `ollama/${modelId}` : `${providerKey}/${modelId}`
+        }
+      }
+    },
+    models: {
+      providers: {
+        [providerKey]: isLocal ? {
+          baseUrl: "http://localclaw-ollama-1:11434/v1",
+          apiKey: "ollama",
+          api: "openai-responses",
+          models: [{ id: modelId, name: modelId }]
+        } : {
+          apiKey: apiKey,
+          models: [{ id: modelId, name: "Cloud Model" }]
+        }
+      }
+    },
+    gateway: {
+      bind: "lan",
+      port: 18789,
+      // FIX 2: 'insecure' moved to 'controlUi.allowInsecureAuth'
+      controlUi: {
+        allowInsecureAuth: true
+      },
+      auth: { 
+        mode: "token", 
+        token: process.env.OPENCLAW_GATEWAY_TOKEN || "localclaw_master_token"
+      }
+    },
+    channels: {}
+  };
+
+  // Add Channels
+if (channels?.telegram) {
+    config.channels["telegram"] = { 
+      enabled: true, 
+      botToken: channels.telegram, // Documentation uses 'botToken'
+      dmPolicy: "open",          // Included as per minimal config
+      allowFrom: ["*"]
+    };
+  }
+  if (channels?.whatsapp) config.channels["whatsapp"] = { enabled: true, provider: "twilio", token: channels.whatsapp };
+
+  return JSON.stringify(config, null, 2);
+}
+
+// --- MAIN API HANDLER ---
+export async function POST(req: Request) {
+  try {
+    await cleanupOrphanedAgents();
+    const body = await req.json();
+    const { agentId, provider, apiKey, channels } = body;
+    const imageName = "alpine/openclaw:latest";
+
+    // STEP 1: Handle Auto-Download for LocalClaw
+    if (provider === "localclaw" || provider === "local") {
+      await ensureLocalModel("qwen2.5:7b");
+    }
+
+    // STEP 2: Programmatic Image Pull
+    console.log(`📡 Checking for image: ${imageName}`);
+    try {
+      await docker.getImage(imageName).inspect();
+      console.log("✅ Image already exists locally.");
+    } catch (e) {
+      // @ts-ignore: Unused variable e is fine here
+      console.log(`⬇️ Image missing. Pulling ${imageName}...`);
+      const stream = await docker.pull(imageName);
+      await new Promise((resolve, reject) => {
+        // Explicitly type callbacks to fix build error
+        docker.modem.followProgress(stream, (err: any, res: any) => err ? reject(err) : resolve(res));
+      });
+      console.log("🎉 Pull complete!");
+    }
+
+    // STEP 3: Create Directories
+    const agentDir = path.join(process.cwd(), "agents", agentId);
+    const configDir = path.join(agentDir, ".openclaw");
+    const workspaceDir = path.join(agentDir, "workspace");
+
+    if (!fs.existsSync(configDir)) fs.mkdirSync(configDir, { recursive: true });
+    if (!fs.existsSync(workspaceDir)) fs.mkdirSync(workspaceDir, { recursive: true });
+
+    // STEP 4: Write the Config File
+    const configJSON = generateConfig(agentId, provider, apiKey, channels);
+    fs.writeFileSync(path.join(configDir, "openclaw.json"), configJSON);
+
+    // STEP 5: Cleanup Old Containers
+    const existingContainer = docker.getContainer(agentId);
+    try {
+      await existingContainer.remove({ force: true });
+    } catch (e) {}
+
+    // STEP 6: Spawn the Agent Container
+    const container = await docker.createContainer({
+      Image: imageName,
+      name: agentId,
+      User: "0:0", // Run as Root to read config
+      HostConfig: {
+        NetworkMode: "localclaw_default",
+        Binds: [
+          `${HOST_AGENTS_PATH}/${agentId}/.openclaw:/root/.openclaw`,
+          `${HOST_AGENTS_PATH}/${agentId}/workspace:/root/openclaw/workspace`,
+        ],
+        PortBindings: { "18789/tcp": [{ HostPort: "0" }] },
+        RestartPolicy: { Name: "unless-stopped" },
+      },
+      Cmd: [
+        "node", "openclaw.mjs", "gateway",
+        "--bind", "lan",
+        "--allow-unconfigured",
+      ],
+    });
+
+    await container.start();
+
+    // Get the assigned port
+    const info = await container.inspect();
+    const port = info.NetworkSettings.Ports["18789/tcp"][0].HostPort;
+
+    return NextResponse.json({
+      success: true,
+      port: port,
+      dashboardUrl: `http://localhost:${port}/?token=${process.env.OPENCLAW_GATEWAY_TOKEN || "localclaw_master_token"}`,
+    });
+  } catch (error: any) {
+    console.error("Deployment Failed:", error);
+    return NextResponse.json(
+      { success: false, error: error.message },
+      { status: 500 },
+    );
+  }
+}

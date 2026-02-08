@@ -1,0 +1,34 @@
+services:
+  # This is YOUR Wizard App
+  manager:
+    build: .
+    ports:
+      - "3000:3000"
+    volumes:
+      # CRITICAL: Grants "God Mode" over Docker to spawn agents
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Persistent storage for all spawned agents
+      - ./agents:/app/agents
+    environment:
+      - SERVER_IP=localhost
+      # ADD THIS LINE: Define a master token for all your agents
+      - OPENCLAW_GATEWAY_TOKEN=localclaw_master_token
+    restart: always
+
+  # Optional: A shared Ollama instance
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+volumes:
+  ollama_data:

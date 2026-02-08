@@ -9,12 +9,18 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "dockerode": "^4.0.9",
+    "fs-extra": "^11.3.3",
+    "lucide-react": "^0.563.0",
     "next": "16.1.6",
     "react": "19.2.3",
-    "react-dom": "19.2.3"
+    "react-dom": "19.2.3",
+    "uuid": "^13.0.0"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
+    "@types/dockerode": "^4.0.1",
+    "@types/fs-extra": "^11.0.4",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",

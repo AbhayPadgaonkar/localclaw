@@ -13,30 +13,47 @@ const HOST_AGENTS_PATH = "D:\\abhay_projects\\localclaw\\agents";
 // --- HELPER 1: The Auto-Downloader (Only for LocalClaw) ---
 // --- NEW HELPER: The "Janitor" (Cleanup Orphaned Agents) ---
 async function cleanupOrphanedAgents() {
-  console.log("🧹 Starting network cleanup...");
+  console.log("🧹 Starting deep cleanup (Containers + Folders)...");
   try {
     // 1. List all containers (even stopped ones)
     const containers = await docker.listContainers({ all: true });
 
     // 2. Identify LocalClaw agents by their name prefix
-    const targets = containers.filter(c => 
-      c.Names.some(name => name.includes("agent-") || name.includes("telebot-"))
+    const targets = containers.filter((c) =>
+      c.Names.some(
+        (name) => name.includes("agent-") || name.includes("telebot-"),
+      ),
     );
 
-    if (targets.length === 0) return;
+    if (targets.length === 0) {
+      console.log("✨ No orphaned agents found.");
+      return;
+    }
 
-    console.log(`🗑️ Found ${targets.length} orphaned agents. Removing...`);
+    console.log(`🗑️ Found ${targets.length} orphaned agents. Purging...`);
 
-    // 3. Force-remove them all in parallel
-    await Promise.all(targets.map(async (cInfo) => {
+    // 3. Process each target
+    for (const cInfo of targets) {
+      // Docker names often start with '/', we need to strip it for the file path
+      const agentId = cInfo.Names[0].replace("/", "");
+      const agentFolderPath = path.join(HOST_AGENTS_PATH, agentId);
+
       try {
+        // A. Force-remove the Docker Container
         const container = docker.getContainer(cInfo.Id);
-        await container.remove({ force: true }); //
-        console.log(`✅ Removed: ${cInfo.Names[0]}`);
-      } catch (e) {
-        // Ignore if already removed
+        await container.remove({ force: true });
+        console.log(`✅ Docker Container Removed: ${agentId}`);
+
+        // B. Physically delete the local folder from D: drive
+        if (fs.existsSync(agentFolderPath)) {
+          // 'recursive: true' handles the .openclaw and workspace subfolders
+          fs.rmSync(agentFolderPath, { recursive: true, force: true });
+          console.log(`📂 Local Directory Deleted: ${agentId}`);
+        }
+      } catch (e: any) {
+        console.warn(`⚠️ Partial cleanup for ${agentId}: ${e.message}`);
       }
-    }));
+    }
   } catch (error: any) {
     console.error("❌ Cleanup failed:", error.message);
   }
@@ -56,13 +73,16 @@ async function ensureLocalModel(modelName: string) {
       return;
     }
 
-    console.log(`⬇️ Model missing. Pulling ${modelName}... (This may take time)`);
+    console.log(
+      `⬇️ Model missing. Pulling ${modelName}... (This may take time)`,
+    );
     const pullReq = await fetch(`${OLLAMA_API}/api/pull`, {
       method: "POST",
       body: JSON.stringify({ name: modelName, stream: false }),
     });
 
-    if (!pullReq.ok) throw new Error(`Ollama Pull Failed: ${pullReq.statusText}`);
+    if (!pullReq.ok)
+      throw new Error(`Ollama Pull Failed: ${pullReq.statusText}`);
     console.log(`🎉 ${modelName} installed successfully!`);
   } catch (error) {
     console.error("❌ LocalClaw Error:", error);
@@ -71,64 +91,96 @@ async function ensureLocalModel(modelName: string) {
 }
 
 // --- HELPER 2: The Config Generator (Fixed for 2026 Schema) ---
-function generateConfig(agentId: string, provider: string, apiKey: string, channels: any) {
+function generateConfig(
+  agentId: string,
+  provider: string,
+  apiKey: string,
+  channels: any,
+) {
   const isLocal = provider === "localclaw" || provider === "local";
-  const modelId = isLocal ? "qwen2.5:7b" : (provider === "openai" ? "gpt-4o" : "gemini-1.5-flash");
-  const providerKey = isLocal ? "ollama" : (provider === "openai" ? "openai" : "google");
+  const modelId = isLocal
+    ? "qwen2.5:7b"
+    : provider === "openai"
+      ? "gpt-4o"
+      : "gemini-1.5-flash";
+  const providerKey = isLocal
+    ? "ollama"
+    : provider === "openai"
+      ? "openai"
+      : "google";
 
   const config: any = {
     tools: {
-    profile: "messaging"
-  },
+      profile: "messaging",
+    },
     agents: {
       defaults: {
         maxConcurrent: 4,
         workspace: "/root/openclaw/workspace",
         // FIX 1: 'primaryModel' moved to 'model.primary'
         model: {
-          primary: isLocal ? `ollama/${modelId}` : `${providerKey}/${modelId}`
-        }
-      }
+          primary: isLocal ? `ollama/${modelId}` : `${providerKey}/${modelId}`,
+        },
+      },
     },
     models: {
       providers: {
-        [providerKey]: isLocal ? {
-          baseUrl: "http://localclaw-ollama-1:11434/v1",
-          apiKey: "ollama",
-          api: "openai-responses",
-          models: [{ id: modelId, name: modelId }]
-        } : {
-          apiKey: apiKey,
-          models: [{ id: modelId, name: "Cloud Model" }]
-        }
-      }
+        [providerKey]: isLocal
+          ? {
+              baseUrl: "http://localclaw-ollama-1:11434/v1",
+              apiKey: "ollama",
+              api: "openai-responses",
+              models: [{ id: modelId, name: modelId }],
+            }
+          : {
+              apiKey: apiKey,
+              models: [{ id: modelId, name: "Cloud Model" }],
+            },
+      },
     },
     gateway: {
       bind: "lan",
       port: 18789,
       // FIX 2: 'insecure' moved to 'controlUi.allowInsecureAuth'
       controlUi: {
-        allowInsecureAuth: true
+        allowInsecureAuth: true,
       },
-      auth: { 
-        mode: "token", 
-        token: process.env.OPENCLAW_GATEWAY_TOKEN || "localclaw_master_token"
-      }
+      auth: {
+        mode: "token",
+        token: process.env.OPENCLAW_GATEWAY_TOKEN || "localclaw_master_token",
+      },
     },
-    channels: {}
+    channels: {},
   };
 
   // Add Channels
-if (channels?.telegram) {
-    config.channels["telegram"] = { 
-      enabled: true, 
+  if (channels?.telegram) {
+    config.channels["telegram"] = {
+      enabled: true,
       botToken: channels.telegram, // Documentation uses 'botToken'
-      dmPolicy: "open",          // Included as per minimal config
-      allowFrom: ["*"]
+      dmPolicy: "open", // Included as per minimal config
+      allowFrom: ["*"],
     };
   }
-  if (channels?.whatsapp) config.channels["whatsapp"] = { enabled: true, provider: "twilio", token: channels.whatsapp };
+  // --- UPDATED WHATSAPP CONFIG (Dynamic & Self-Chat) ---
+  if (channels?.whatsapp) {
+    // Ensure the number starts with '+' as required by E.164 format
+    const userPhone = channels.whatsapp.startsWith("+")
+      ? channels.whatsapp.trim()
+      : `+${channels.whatsapp.trim()}`;
 
+    config.channels["whatsapp"] = {
+      // Remove the "enabled: true" key to fix the 'Unrecognized key' error
+      selfChatMode: true, // Enabled as requested
+      dmPolicy: "allowlist", // Only allow the specified number
+      allowFrom: [userPhone], // Use the dynamic number from the UI
+      sendReadReceipts: true,
+      ackReaction: {
+        emoji: "👀",
+        direct: true,
+      },
+    };
+  }
   return JSON.stringify(config, null, 2);
 }
 
@@ -156,18 +208,35 @@ export async function POST(req: Request) {
       const stream = await docker.pull(imageName);
       await new Promise((resolve, reject) => {
         // Explicitly type callbacks to fix build error
-        docker.modem.followProgress(stream, (err: any, res: any) => err ? reject(err) : resolve(res));
+        docker.modem.followProgress(stream, (err: any, res: any) =>
+          err ? reject(err) : resolve(res),
+        );
       });
       console.log("🎉 Pull complete!");
     }
 
-    // STEP 3: Create Directories
+    // --- STEP 3: Create Directories (Updated for Doc Requirements) ---
     const agentDir = path.join(process.cwd(), "agents", agentId);
     const configDir = path.join(agentDir, ".openclaw");
     const workspaceDir = path.join(agentDir, "workspace");
 
+    // Pre-create the WhatsApp credential path defined in the docs
+    // Using 'default' as the accountId since we aren't passing --account <id>
+    const whatsappAuthDir = path.join(
+      configDir,
+      "credentials",
+      "whatsapp",
+      "default",
+    );
+
     if (!fs.existsSync(configDir)) fs.mkdirSync(configDir, { recursive: true });
-    if (!fs.existsSync(workspaceDir)) fs.mkdirSync(workspaceDir, { recursive: true });
+    if (!fs.existsSync(workspaceDir))
+      fs.mkdirSync(workspaceDir, { recursive: true });
+
+    // CRITICAL: Ensure the WhatsApp auth path exists so the agent can write creds.json
+    if (!fs.existsSync(whatsappAuthDir)) {
+      fs.mkdirSync(whatsappAuthDir, { recursive: true });
+    }
 
     // STEP 4: Write the Config File
     const configJSON = generateConfig(agentId, provider, apiKey, channels);
@@ -184,6 +253,12 @@ export async function POST(req: Request) {
       Image: imageName,
       name: agentId,
       User: "0:0", // Run as Root to read config
+      Labels: {
+        "com.docker.compose.project": "localclaw", // MUST match your parent folder name or compose project name
+        "com.docker.compose.service": "agent", // A logical name for the service
+        "com.docker.compose.oneoff": "False", // Treats it as a service, not a temporary job
+      },
+      // -
       HostConfig: {
         NetworkMode: "localclaw_default",
         Binds: [
@@ -194,8 +269,11 @@ export async function POST(req: Request) {
         RestartPolicy: { Name: "unless-stopped" },
       },
       Cmd: [
-        "node", "openclaw.mjs", "gateway",
-        "--bind", "lan",
+        "node",
+        "openclaw.mjs",
+        "gateway",
+        "--bind",
+        "lan",
         "--allow-unconfigured",
       ],
     });

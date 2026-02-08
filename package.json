@@ -9,6 +9,8 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "dockerode": "^4.0.9",
     "fs-extra": "^11.3.3",
     "lucide-react": "^0.563.0",

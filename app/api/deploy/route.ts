@@ -205,7 +205,7 @@ export async function POST(req: Request) {
     const body = await req.json();
     // Removed 'userId' from body destructuring since we trust the session
     const { agentId, provider, apiKey, channels } = body;
-    const imageName = "alpine/openclaw:latest";
+    const imageName = "alpine/openclaw:2026.2.6-3";
 
     // 🟢 3. SAAS GUARD: Check 1-Hour Limit Logic
     const user = await db.query.users.findFirst({

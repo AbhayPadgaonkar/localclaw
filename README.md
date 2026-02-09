@@ -1,7 +1,7 @@
 
 ---
 
-# 🦞 LocalClaw Pro
+# 🦞 LocalClaw 
 
 **Self-Hosted Autonomous AI Agent SaaS Platform**
 

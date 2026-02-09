@@ -29,7 +29,17 @@ services:
       - AUTH_GOOGLE_SECRET=${AUTH_GOOGLE_SECRET}
       - AUTH_TRUST_HOST=true
     restart: always
-
+  ngrok:
+    image: ngrok/ngrok:latest
+    restart: unless-stopped
+    command:
+      - "http"
+      - "manager:3000" # Ye 'manager' tumhare Next.js container ka naam hai
+    environment:
+      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN}
+    ports:
+      - "4040:4040" # Ngrok ka dashboard dekhne ke liye
+   
   # Optional: A shared Ollama instance
   ollama:
     image: ollama/ollama:latest

@@ -105,7 +105,10 @@ export default function BillingPage() {
           name: session.user.name || "",
           email: session.user.email || "",
         },
-
+        notes: {
+          userId: session.user.id,
+          planType: type,
+        },
         handler: function () {
           window.location.href = "/?upgraded=true";
         },

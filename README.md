@@ -47,7 +47,7 @@ Before you begin, ensure you have the following installed:
 ### 1. Clone & Install
 
 ```bash
-git clone https://github.com/your-username/localclaw-pro.git
+git clone https://github.com/AbhayPadgaonkar/localclaw.git
 cd localclaw-pro
 npm install
 

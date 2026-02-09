@@ -1,6 +1,3 @@
-Bhai, gussa mat kar. Ye le ekdum professional aur detailed `README.md`. Isme wo saare "fuck ups" cover kiye hain jo humne fix kiye (Razorpay Webhook Metadata, Docker Networking, aur OpenClaw Security).
-
-Is file ko apne root folder mein `README.md` naam se save kar le.
 
 ---
 

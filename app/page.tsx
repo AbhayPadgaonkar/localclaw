@@ -1,5 +1,6 @@
 "use client";
 import { useState, useEffect, useRef, ReactNode } from "react";
+import { useRouter } from "next/navigation"; // 🟢 For Redirects
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
@@ -15,6 +16,8 @@ import {
   Zap,
   Shield,
   Globe,
+  LogOut,
+  CreditCard,
 } from "lucide-react";
 
 // --- TYPES ---
@@ -99,12 +102,17 @@ const TypewriterText = ({ text }: { text: string }) => {
 };
 
 export default function Wizard() {
+  const router = useRouter(); // 🟢 Router for redirects
+
   // 1. STATE DECLARATIONS
   const [started, setStarted] = useState(false);
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
   const [resultUrl, setResultUrl] = useState("");
   const [deployedId, setDeployedId] = useState("");
+
+  // 🟢 Usage State
+  const [usage, setUsage] = useState({ remaining: 3600, isPremium: false });
 
   const [formData, setFormData] = useState({
     agentName: "",
@@ -116,11 +124,50 @@ export default function Wizard() {
   const hasTelegram = formData.telegramToken.trim().length > 0;
   const hasWhatsapp = formData.whatsappToken.trim().length > 0;
 
-  // 2. TERMINAL REFS (For Xterm.js)
+  // 2. TERMINAL REFS
   const terminalRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<Terminal | null>(null);
 
-  // 3. EFFECT: Stream QR Code
+  // 🟢 3. AUTH & QUOTA CHECK ON LOAD
+  useEffect(() => {
+    const checkAuthAndQuota = async () => {
+      try {
+        // We call heartbeat to see if user is logged in and has time
+        const res = await fetch("/api/agent/heartbeat", { method: "POST" });
+
+        if (res.status === 401) {
+          // Not logged in -> Go to Login
+          router.push("/login");
+          return;
+        }
+
+        const data = await res.json();
+
+        if (data.status === "blocked") {
+          // Quota exceeded -> Go to Billing
+          router.push("/billing");
+          return;
+        }
+
+        setUsage({
+          remaining:
+            data.remaining === "unlimited"
+              ? 3600
+              : Number(data.remaining) || 3600,
+          isPremium: data.remaining === "unlimited",
+        });
+      } catch (e) {
+        console.error("Auth Check Failed", e);
+      }
+    };
+
+    // Only check when user clicks "Initialize" to avoid spamming before they start
+    if (started) {
+      checkAuthAndQuota();
+    }
+  }, [started, router]);
+
+  // 4. EFFECT: Stream QR Code (UNCHANGED)
   useEffect(() => {
     if (
       step === 3 &&
@@ -128,13 +175,12 @@ export default function Wizard() {
       deployedId &&
       terminalRef.current
     ) {
-      // Initialize Xterm
       const term = new Terminal({
         theme: { background: "#000000", foreground: "#ffffff" },
         fontSize: 10,
         lineHeight: 0.7,
         cursorBlink: true,
-        convertEol: true, // Fixes the "staircase" text glitch
+        convertEol: true,
       });
 
       const fitAddon = new FitAddon();
@@ -151,7 +197,6 @@ export default function Wizard() {
           term.writeln("Initializing Secure Handshake...");
 
           const res = await fetch(`/api/whatsapp/qr?agentId=${deployedId}`);
-
           if (!res.ok) throw new Error(`Server Error: ${res.status}`);
           if (!res.body) throw new Error("No body in response");
 
@@ -169,7 +214,6 @@ export default function Wizard() {
       };
 
       streamLogs();
-
       return () => {
         active = false;
         term.dispose();
@@ -198,10 +242,23 @@ export default function Wizard() {
             telegram: formData.telegramToken,
             whatsapp: formData.whatsappToken,
           },
+          // 🟢 NOTE: We don't need to send userId anymore, the API gets it from session!
         }),
       });
 
       const data = await res.json();
+
+      // 🟢 HANDLE SAAS ERRORS
+      if (res.status === 403 || data.code === "QUOTA_EXCEEDED") {
+        router.push("/billing");
+        return;
+      }
+
+      if (res.status === 401) {
+        router.push("/login");
+        return;
+      }
+
       if (data.success) {
         setResultUrl(data.dashboardUrl);
         setStep(3);
@@ -224,6 +281,67 @@ export default function Wizard() {
       `}</style>
       <Stars />
       <div className="absolute inset-0 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-10 pointer-events-none"></div>
+
+      {/* 🟢 TOP BAR: Usage & Logout */}
+      {started && (
+        <div className="absolute top-6 right-6 z-50 flex items-center gap-4">
+          {/* Usage Badge */}
+          <div className="hidden md:flex flex-col items-end">
+            <span className="text-[10px] text-slate-500 uppercase tracking-widest font-bold">
+              {usage.isPremium ? "PRO PLAN" : "DAILY USAGE"}
+            </span>
+            <div className="flex items-center gap-2">
+              <div className="w-24 h-1 bg-slate-800 rounded-full overflow-hidden">
+                <div
+                  className={`h-full transition-all duration-500 ${
+                    usage.isPremium
+                      ? "bg-amber-400"
+                      : 3600 - usage.remaining > 3000
+                        ? "bg-red-600"
+                        : "bg-emerald-500"
+                  }`}
+                  style={{
+                    // 🟢 Fills up as you use it
+                    width: usage.isPremium
+                      ? "100%"
+                      : `${((3600 - usage.remaining) / 3600) * 100}%`,
+                  }}
+                />
+              </div>
+              <span
+                className={`text-xs font-mono ${usage.isPremium ? "text-amber-400" : "text-white"}`}
+              >
+                {usage.isPremium
+                  ? "∞"
+                  : `${Math.floor((3600 - usage.remaining) / 60)} / 60m`}{" "}
+                {/* 🟢 Shows "58 / 60m" */}
+              </span>
+            </div>
+          </div>
+
+          {/* Billing Button */}
+          {!usage.isPremium && (
+            <button
+              onClick={() => router.push("/billing")}
+              className="p-2 bg-slate-900 border border-slate-700 rounded-full hover:border-red-500 text-slate-400 hover:text-white transition"
+              title="Upgrade Plan"
+            >
+              <CreditCard className="w-4 h-4" />
+            </button>
+          )}
+
+          {/* Logout Button */}
+          <button
+            onClick={() =>
+              fetch("/api/auth/signout").then(() => router.push("/login"))
+            }
+            className="p-2 bg-slate-900 border border-slate-700 rounded-full hover:bg-red-900 hover:border-red-600 transition"
+            title="Sign Out"
+          >
+            <LogOut className="w-4 h-4 text-slate-300" />
+          </button>
+        </div>
+      )}
 
       {/* --- WELCOME SCREEN --- */}
       {!started && (
@@ -452,7 +570,7 @@ export default function Wizard() {
               {hasWhatsapp && (
                 <div className="mt-8 mb-8 w-full max-w-md mx-auto text-left relative group">
                   <div className="absolute -inset-1 bg-gradient-to-r from-red-600 to-red-900 rounded-xl blur opacity-25 group-hover:opacity-50 transition duration-1000"></div>
-                  {/* TERMINAL CONTAINER: Renders the ASCII QR Code Properly */}
+                  {/* TERMINAL CONTAINER */}
                   <div
                     ref={terminalRef}
                     className="w-full h-100 bg-black rounded-xl overflow-hidden border border-white/10 shadow-2xl p-2"
